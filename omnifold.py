@@ -3,8 +3,8 @@ import tensorflow as tf
 import tensorflow.keras.backend as K
 from sklearn.model_selection import train_test_split
 
-def reweight(events,model,batch_size=10000):
-    f = model.predict(events, batch_size=batch_size)
+def reweight(events,model,batch_size=10000,epsilon=0.01):
+    f = model.predict(events, batch_size=batch_size,verbose=0)
     weights = f / (1. - f)
     return np.squeeze(np.nan_to_num(weights))
 
@@ -29,8 +29,8 @@ def omnifold(theta0,theta_unknown_S,iterations,model,verbose=0):
     weights = np.empty(shape=(iterations, 2, len(theta0)))
     # shape = (iteration, step, event)
     
-    theta0_G = theta0[:,0]
-    theta0_S = theta0[:,1]
+    theta0_G = theta0[...,0]
+    theta0_S = theta0[...,1]
     
     labels0 = np.zeros(len(theta0))
     labels_unknown = np.ones(len(theta_unknown_S))
@@ -38,6 +38,8 @@ def omnifold(theta0,theta_unknown_S,iterations,model,verbose=0):
     xvals_1 = np.concatenate((theta0_S, theta_unknown_S))
     yvals_1 = np.concatenate((labels0, labels_unknown))
 
+    # Second step trains a classifier between generation and reweighted generation with weights
+    # pulled from detector level.
     xvals_2 = np.concatenate((theta0_G, theta0_G))
     yvals_2 = np.concatenate((labels0, labels_unknown))
 
@@ -67,17 +69,18 @@ def omnifold(theta0,theta_unknown_S,iterations,model,verbose=0):
         Y_test_1 = np.stack((Y_test_1, w_test_1), axis=1)   
         
         model.compile(loss=weighted_binary_crossentropy,
-                      optimizer='Adam',
+                      optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
                       metrics=['accuracy'])
 
         model.fit(X_train_1,
                   Y_train_1,
-                  epochs=20,
+                  epochs=3,
                   batch_size=10000,
                   validation_data=(X_test_1, Y_test_1),
-                  verbose=verbose)
+                  verbose=2)
 
-        weights_pull = weights_push * reweight(theta0_S,model)
+        output = reweight(theta0_S,model)
+        weights_pull = output * weights_push
         weights[i, :1, :] = weights_pull
 
         # STEP 2: classify Gen. to reweighted Gen. (which is reweighted by weights_pull)
@@ -97,14 +100,14 @@ def omnifold(theta0,theta_unknown_S,iterations,model,verbose=0):
         Y_test_2 = np.stack((Y_test_2, w_test_2), axis=1)   
         
         model.compile(loss=weighted_binary_crossentropy,
-                      optimizer='Adam',
+                      optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
                       metrics=['accuracy'])
         model.fit(X_train_2,
                   Y_train_2,
-                  epochs=20,
+                  epochs=3,
                   batch_size=2000,
                   validation_data=(X_test_2, Y_test_2),
-                  verbose=verbose)
+                  verbose=2)
         
         weights_push = reweight(theta0_G,model)
         weights[i, 1:2, :] = weights_push
